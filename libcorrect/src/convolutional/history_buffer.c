@@ -1,4 +1,8 @@
 #include "correct/convolutional/history_buffer.h"
+#include <stdlib.h>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 history_buffer *history_buffer_create(unsigned int min_traceback_length,
                                       unsigned int traceback_group_length,
@@ -45,6 +49,39 @@ uint8_t *history_buffer_get_slice(history_buffer *buf) { return buf->history[buf
 
 shift_register_t history_buffer_search(history_buffer *buf, const distance_t *distances,
                                        unsigned int search_every) {
+#if defined(__ARM_NEON)
+    // this argmin runs once per decoded time slice; u16x8 lanes with a lane-index
+    // shadow keep the scalar loop's tie-break (lowest state among equal minima)
+    static int use_neon = -1;
+    if (use_neon < 0) {
+        use_neon = getenv("LIBCORRECT_NO_NEON") ? 0 : 1;
+    }
+    if (use_neon && search_every == 1 && (buf->num_states % 8) == 0) {
+        uint16x8_t idx = { 0, 1, 2, 3, 4, 5, 6, 7 };
+        const uint16x8_t step = vdupq_n_u16(8);
+        uint16x8_t best = vdupq_n_u16(0xFFFF);
+        uint16x8_t bestidx = vdupq_n_u16(0);
+        for (shift_register_t state = 0; state < buf->num_states; state += 8) {
+            uint16x8_t d = vld1q_u16(distances + state);
+            uint16x8_t lt = vcltq_u16(d, best);
+            best = vbslq_u16(lt, d, best);
+            bestidx = vbslq_u16(lt, idx, bestidx);
+            idx = vaddq_u16(idx, step);
+        }
+        uint16_t vals[8], idxs[8];
+        vst1q_u16(vals, best);
+        vst1q_u16(idxs, bestidx);
+        distance_t leasterror = vals[0];
+        shift_register_t bestpath = idxs[0];
+        for (int k = 1; k < 8; k++) {
+            if (vals[k] < leasterror || (vals[k] == leasterror && idxs[k] < bestpath)) {
+                leasterror = vals[k];
+                bestpath = idxs[k];
+            }
+        }
+        return bestpath;
+    }
+#endif
     shift_register_t bestpath = 0;
     distance_t leasterror = USHRT_MAX;
     // search for a state with the least error

@@ -51,3 +51,26 @@ qemu understates NEON gains (TCG emulates vector ops slowly; it showed only 1.1x
 measure the real ratio on the A53 at the bench window:
 `./conv_bench 200 4096` vs `LIBCORRECT_NO_NEON=1 ./conv_bench 200 4096`, then
 `ryfi_bench 720e3 10 1.0`.
+
+## Deep vectorization pass 2 (2026-07-06, ARM-only by design)
+
+Per-stage re-profile after pass 1, then three targeted changes (deployment target is
+the A53; x86 stays a plain scalar reference on purpose):
+
+- **Costas loop**: libm `sinf`+`cosf` per sample replaced by `math::fastPhasor()`
+  (folded least-squares polynomials, max error sin 1.0e-8 / cos 1.4e-7) - aarch64
+  libm trig is expensive at sample rate, and the PLL wraps phase to [-pi, pi] so no
+  general range reduction is needed.
+- **`-fno-math-errno`** on all targets and in the cross toolchain: lets the compiler
+  inline `sqrtf` (AGC amplitude tracking, MM recovery) to the hardware square-root
+  instruction instead of a libm call.
+- **Viterbi traceback search**: the per-time-slice 32-state argmin now runs in NEON
+  u16x8 lanes with a lane-index shadow, preserving the scalar loop's lowest-state
+  tie-break exactly.
+
+Gates after the pass: x86 scalar reference bit-exact (conv checksum unchanged,
+modem 9.7x realtime); qemu-aarch64 NEON-vs-scalar checksums identical, full modem
+loopback byte-exact. volk kernel audit: every dot-product/magnitude/rotator kernel
+the chain uses has NEON implementations; only trivial converters lack them (not in
+the hot path). PSK's remaining scalar blocks (AGC gain update, MM feedback) are
+serial by construction - further gains there mean changing the modem, not the code.

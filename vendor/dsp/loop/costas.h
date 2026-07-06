@@ -1,6 +1,7 @@
 #pragma once
 #include "pll.h"
 #include "../math/step.h"
+#include "../math/fast_phasor.h"
 
 namespace dsp::loop {
     template<int ORDER>
@@ -16,7 +17,7 @@ namespace dsp::loop {
 
         inline int process(int count, complex_t* in, complex_t* out) {
             for (int i = 0; i < count; i++) {
-                out[i] = in[i] * math::phasor(-pcl.phase);
+                out[i] = in[i] * math::fastPhasor(-pcl.phase);
                 pcl.advance(errorFunction(out[i]));
             }
             return count;

@@ -8,8 +8,8 @@ set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
 set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 
-set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-a53 -fcx-limited-range")
-set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-a53 -fcx-limited-range")
+set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-a53 -fcx-limited-range -fno-math-errno")
+set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-a53 -fcx-limited-range -fno-math-errno")
 
 # staged cross deps (volk, spdlog, librfnm) land here via build_cross.sh
 if(DEFINED ENV{RYFI_CROSS_PREFIX})
