@@ -1,3 +1,6 @@
-.old/
-.vscode/
 build/
+build-aarch64/
+cross/prefix/
+cross/build-volk/
+cross/build-spdlog/
+cross/build-librfnm/

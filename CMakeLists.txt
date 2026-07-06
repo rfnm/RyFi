@@ -5,12 +5,24 @@ project(ryfi)
 option(OPT_BUILD_BLADERF_SUPPORT "Support for BladeRF devices" ON)
 option(OPT_BUILD_LIMESDR_SUPPORT "Support for LimeSDR devices" ON)
 option(OPT_BUILD_USRP_SUPPORT    "Support for USRP devices"    ON)
+option(OPT_BUILD_RFNM_SUPPORT    "Support for RFNM devices"    ON)
 
 # Find all source files
 file(GLOB_RECURSE SRC "vendor/*.cpp" "src/*.cpp")
 
 # Generate the executable
 add_executable(${PROJECT_NAME} ${SRC})
+
+# Hardware-free loopback benchmark / modem selftest (no device backends)
+option(OPT_BUILD_BENCH "Build the ryfi_bench loopback benchmark" ON)
+if (OPT_BUILD_BENCH)
+    file(GLOB_RECURSE BENCH_SRC "vendor/*.cpp" "src/ryfi/*.cpp" "bench/*.cpp")
+    add_executable(ryfi_bench ${BENCH_SRC})
+    target_include_directories(ryfi_bench PRIVATE "vendor/" "src/")
+    target_compile_features(ryfi_bench PRIVATE cxx_std_20)
+    target_include_directories(ryfi_bench PRIVATE "libcorrect/include")
+    target_link_libraries(ryfi_bench PRIVATE correct_static)
+endif()
 
 # Include the vendor libraries
 target_include_directories(${PROJECT_NAME} PRIVATE "vendor/")
@@ -77,6 +89,12 @@ else()
         ${VOLK_LIBRARIES}
     )
 
+    if (OPT_BUILD_BENCH)
+        target_include_directories(ryfi_bench PRIVATE ${VOLK_INCLUDE_DIRS})
+        target_link_directories(ryfi_bench PRIVATE ${VOLK_LIBRARY_DIRS})
+        target_link_libraries(ryfi_bench PRIVATE ${VOLK_LIBRARIES} pthread)
+    endif()
+
     if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
         target_link_libraries(${PROJECT_NAME} PRIVATE stdc++fs pthread)
         target_include_directories(${PROJECT_NAME} PRIVATE "/usr/local/include")
@@ -98,6 +116,13 @@ endif()
 if (OPT_BUILD_LIMESDR_SUPPORT)
     target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_LIMESDR_SUPPORT)
     target_link_libraries(${PROJECT_NAME} PRIVATE LimeSuite)
+endif()
+if (OPT_BUILD_RFNM_SUPPORT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_RFNM_SUPPORT)
+    pkg_check_modules(LIBRFNM REQUIRED librfnm>=0.2.1)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${LIBRFNM_INCLUDE_DIRS})
+    target_link_directories(${PROJECT_NAME} PRIVATE ${LIBRFNM_LIBRARY_DIRS})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${LIBRFNM_LIBRARIES})
 endif()
 if (OPT_BUILD_USRP_SUPPORT)
     target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_USRP_SUPPORT)

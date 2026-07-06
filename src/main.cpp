@@ -16,6 +16,7 @@
 #include "device/bladerf.h"
 #include "device/limesdr.h"
 #include "device/usrp.h"
+#include "device/rfnm.h"
 
 std::shared_ptr<TUN> tun;
 std::atomic_bool run = true;
@@ -128,6 +129,9 @@ int main(int argc, char** argv) {
 #endif
 #ifdef BUILD_USRP_SUPPORT
         dev::USRPDriver::registerSelf();
+#endif
+#ifdef BUILD_RFNM_SUPPORT
+        dev::RFNMDriver::registerSelf();
 #endif
 
         // Define the command line interface
