@@ -16,12 +16,17 @@ add_executable(${PROJECT_NAME} ${SRC})
 # Hardware-free loopback benchmark / modem selftest (no device backends)
 option(OPT_BUILD_BENCH "Build the ryfi_bench loopback benchmark" ON)
 if (OPT_BUILD_BENCH)
-    file(GLOB_RECURSE BENCH_SRC "vendor/*.cpp" "src/ryfi/*.cpp" "bench/*.cpp")
+    file(GLOB_RECURSE BENCH_SRC "vendor/*.cpp" "src/ryfi/*.cpp" "bench/bench.cpp")
     add_executable(ryfi_bench ${BENCH_SRC})
     target_include_directories(ryfi_bench PRIVATE "vendor/" "src/")
     target_compile_features(ryfi_bench PRIVATE cxx_std_20)
     target_include_directories(ryfi_bench PRIVATE "libcorrect/include")
     target_link_libraries(ryfi_bench PRIVATE correct_static)
+
+    add_executable(conv_bench "bench/conv_bench.cpp")
+    target_compile_features(conv_bench PRIVATE cxx_std_20)
+    target_include_directories(conv_bench PRIVATE "libcorrect/include")
+    target_link_libraries(conv_bench PRIVATE correct_static pthread)
 endif()
 
 # Include the vendor libraries

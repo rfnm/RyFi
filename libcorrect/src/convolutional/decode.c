@@ -1,4 +1,8 @@
 #include "correct/convolutional/convolutional.h"
+#include <stdlib.h>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 void conv_decode_print_iter(correct_convolutional *conv, unsigned int iter,
                             unsigned int winner_index) {
@@ -57,6 +61,82 @@ void convolutional_decode_warmup(correct_convolutional *conv, unsigned int sets,
     }
 }
 
+// Add-compare-select over all trellis states of one time slice. Successor pair p
+// (states 2p, 2p+1) descends from predecessors p (new bit 0) and highbase+p (new bit
+// 1); pair_lookup packs the branch metrics of a successor pair as the two u16 halves
+// of a u32. Ties select the low predecessor, exactly like the historical loop. The
+// NEON path keeps the small key-table gather scalar (NEON has no gather) and runs the
+// arithmetic in u16x8 lanes; it is bit-exact against the scalar path and can be
+// disabled at runtime with LIBCORRECT_NO_NEON=1 for A/B benchmarking.
+static void convolutional_decode_acs(pair_lookup_t pair_lookup, shift_register_t highbase,
+                                     const distance_t *read_errors, distance_t *write_errors,
+                                     uint8_t *history) {
+#if defined(__ARM_NEON)
+    static int use_neon = -1;
+    if (use_neon < 0) {
+        use_neon = getenv("LIBCORRECT_NO_NEON") ? 0 : 1;
+    }
+    if (use_neon && (highbase % 8) == 0) {
+        for (shift_register_t p = 0; p < highbase; p += 8) {
+            uint32_t low_cd[8], high_cd[8];
+            for (unsigned int k = 0; k < 8; k++) {
+                low_cd[k] = pair_lookup.distances[pair_lookup.keys[p + k]];
+                high_cd[k] = pair_lookup.distances[pair_lookup.keys[highbase + p + k]];
+            }
+            // deinterleave the packed u32s into even/odd successor branch metrics
+            uint16x8x2_t low = vld2q_u16((const uint16_t *)low_cd);
+            uint16x8x2_t high = vld2q_u16((const uint16_t *)high_cd);
+            uint16x8_t past_low = vld1q_u16(read_errors + p);
+            uint16x8_t past_high = vld1q_u16(read_errors + highbase + p);
+
+            uint16x8_t low_even = vaddq_u16(low.val[0], past_low);
+            uint16x8_t high_even = vaddq_u16(high.val[0], past_high);
+            uint16x8_t low_odd = vaddq_u16(low.val[1], past_low);
+            uint16x8_t high_odd = vaddq_u16(high.val[1], past_high);
+
+            uint16x8x2_t err;
+            err.val[0] = vminq_u16(low_even, high_even);
+            err.val[1] = vminq_u16(low_odd, high_odd);
+            vst2q_u16(write_errors + 2 * p, err);
+
+            // history bit = 1 iff the high predecessor strictly won (ties keep low)
+            uint16x8_t one = vdupq_n_u16(1);
+            uint8x8x2_t hist;
+            hist.val[0] = vmovn_u16(vandq_u16(vcltq_u16(high_even, low_even), one));
+            hist.val[1] = vmovn_u16(vandq_u16(vcltq_u16(high_odd, low_odd), one));
+            vst2_u8(history + 2 * p, hist);
+        }
+        return;
+    }
+#endif
+    for (shift_register_t p = 0; p < highbase; p++) {
+        distance_pair_t low_concat_dist = pair_lookup.distances[pair_lookup.keys[p]];
+        distance_pair_t high_concat_dist = pair_lookup.distances[pair_lookup.keys[highbase + p]];
+        distance_t low_past_error = read_errors[p];
+        distance_t high_past_error = read_errors[highbase + p];
+
+        distance_t low_error = (low_concat_dist & 0xffff) + low_past_error;
+        distance_t high_error = (high_concat_dist & 0xffff) + high_past_error;
+        if (low_error <= high_error) {
+            write_errors[2 * p] = low_error;
+            history[2 * p] = 0;
+        } else {
+            write_errors[2 * p] = high_error;
+            history[2 * p] = 1;
+        }
+
+        distance_t low_plus_one_error = (low_concat_dist >> 16) + low_past_error;
+        distance_t high_plus_one_error = (high_concat_dist >> 16) + high_past_error;
+        if (low_plus_one_error <= high_plus_one_error) {
+            write_errors[2 * p + 1] = low_plus_one_error;
+            history[2 * p + 1] = 0;
+        } else {
+            write_errors[2 * p + 1] = high_plus_one_error;
+            history[2 * p + 1] = 1;
+        }
+    }
+}
+
 void convolutional_decode_inner(correct_convolutional *conv, unsigned int sets,
                                 const uint8_t *soft) {
     shift_register_t highbit = 1 << (conv->order - 1);
@@ -100,72 +180,8 @@ void convolutional_decode_inner(correct_convolutional *conv, unsigned int sets,
         // we'll update the history for every state and find the path with the least aggregated bit
         // errors
 
-        // now run the main loop
-        // we calculate 2 sets of 2 register states here (4 states per iter)
-        // this creates 2 sets which share a predecessor, and 2 sets which share a successor
-        //
-        // the first set definition is the two states that are the same except for the least order
-        // bit
-        // these two share a predecessor because their high n - 1 bits are the same (differ only by
-        // newest bit)
-        //
-        // the second set definition is the two states that are the same except for the high order
-        // bit
-        // these two share a successor because the oldest high order bit will be shifted out, and
-        // the other bits will be present in the successor
-        //
-        shift_register_t highbase = highbit >> 1;
-        for (shift_register_t low = 0, high = highbit, base = 0; high < num_iter;
-             low += 8, high += 8, base += 4) {
-            // shifted-right ancestors
-            // low and low_plus_one share low_past_error
-            //   note that they are the same when shifted right by 1
-            // same goes for high and high_plus_one
-            for (shift_register_t offset = 0, base_offset = 0; base_offset < 4;
-                 offset += 2, base_offset += 1) {
-                distance_pair_key_t low_key = pair_lookup.keys[base + base_offset];
-                distance_pair_key_t high_key = pair_lookup.keys[highbase + base + base_offset];
-                distance_pair_t low_concat_dist = pair_lookup.distances[low_key];
-                distance_pair_t high_concat_dist = pair_lookup.distances[high_key];
-
-                distance_t low_past_error = read_errors[base + base_offset];
-                distance_t high_past_error = read_errors[highbase + base + base_offset];
-
-                distance_t low_error = (low_concat_dist & 0xffff) + low_past_error;
-                distance_t high_error = (high_concat_dist & 0xffff) + high_past_error;
-
-                shift_register_t successor = low + offset;
-                distance_t error;
-                uint8_t history_mask;
-                if (low_error <= high_error) {
-                    error = low_error;
-                    history_mask = 0;
-                } else {
-                    error = high_error;
-                    history_mask = 1;
-                }
-                write_errors[successor] = error;
-                history[successor] = history_mask;
-
-                shift_register_t low_plus_one = low + offset + 1;
-
-                distance_t low_plus_one_error = (low_concat_dist >> 16) + low_past_error;
-                distance_t high_plus_one_error = (high_concat_dist >> 16) + high_past_error;
-
-                shift_register_t plus_one_successor = low_plus_one;
-                distance_t plus_one_error;
-                uint8_t plus_one_history_mask;
-                if (low_plus_one_error <= high_plus_one_error) {
-                    plus_one_error = low_plus_one_error;
-                    plus_one_history_mask = 0;
-                } else {
-                    plus_one_error = high_plus_one_error;
-                    plus_one_history_mask = 1;
-                }
-                write_errors[plus_one_successor] = plus_one_error;
-                history[plus_one_successor] = plus_one_history_mask;
-            }
-        }
+        // the hot loop: add-compare-select across all states (NEON on aarch64)
+        convolutional_decode_acs(pair_lookup, highbit >> 1, read_errors, write_errors, history);
 
         history_buffer_process(conv->history_buffer, write_errors, conv->bit_writer);
         error_buffer_swap(conv->errors);

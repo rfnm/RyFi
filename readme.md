@@ -30,3 +30,24 @@ Verified off-board (boards were blocked):
 Board bring-up notes: needs librfnm >= 0.2.1 on the device (deploy together with the
 fleet); mind the upstream disclaimer above before radiating - first RF tests belong on
 a cable + attenuator between two boards.
+
+## NEON pass (2026-07-06)
+
+Thread-level profile of the loopback pipeline (x86, transfers structurally to the
+A53): libcorrect Viterbi decode ~38% of CPU, PSK demod ~28% (RRC/AGC/Costas/clock
+recovery - the latter three are serial per-sample feedback loops and cannot be
+vectorized without changing the modem), everything else small.
+
+- `libcorrect` Viterbi ACS rewritten as a shared helper with a NEON u16x8 path
+  (aarch64): all 64 trellis states per time slice in vector lanes, key-table gather
+  kept scalar, tie behavior identical to the historical loop. Bit-exact against the
+  scalar reference (`LIBCORRECT_NO_NEON=1` selects scalar at runtime for A/B).
+- `bench/conv_bench` measures the decoder alone and verifies the A/B: identical
+  output checksums under qemu, modem loopback 244/244 byte-exact with NEON active.
+- The RFNM backend's CS16<->float edge loops auto-vectorize at -O3 (verified in the
+  aarch64 objdump).
+
+qemu understates NEON gains (TCG emulates vector ops slowly; it showed only 1.1x) -
+measure the real ratio on the A53 at the bench window:
+`./conv_bench 200 4096` vs `LIBCORRECT_NO_NEON=1 ./conv_bench 200 4096`, then
+`ryfi_bench 720e3 10 1.0`.
