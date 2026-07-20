@@ -2,6 +2,7 @@
 #include "rfnm.h"
 #include "flog/flog.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 // RFNM backend via librfnm (>= 0.2.1). Bench rules encoded: stale channels recovered
@@ -136,6 +137,7 @@ namespace dev {
         void* buffs[1] = { raw.data() };
         constexpr float scale = 1.0f / 32768.0f;
         uint64_t lastDropped = 0;
+        auto lastHealthPoll = std::chrono::steady_clock::now();
 
         while (true) {
             size_t got = 0;
@@ -154,12 +156,16 @@ namespace dev {
             }
             if (!out.swap(got)) { break; }
 
-            // judge stream health by the transport counters, never by log lines
-            uint64_t ok = 0, dropped = 0;
-            ctx->dev->get_rx_stream_stats(ok, dropped);
-            if (dropped > lastDropped) {
-                flog::warn("RFNM transport dropped {} packet(s); the sample stream has a gap", (int)(dropped - lastDropped));
-                lastDropped = dropped;
+            // judge stream health by the transport counters, never by log lines.
+            // get_health is a status round trip - poll at 1 Hz, not per block
+            auto healthNow = std::chrono::steady_clock::now();
+            if (healthNow - lastHealthPoll >= std::chrono::seconds(1)) {
+                lastHealthPoll = healthNow;
+                rfnm::health h = {};
+                if (ctx->dev->get_health(&h) == RFNM_API_OK && h.rx_pkts_dropped > lastDropped) {
+                    flog::warn("RFNM transport dropped {} packet(s); the sample stream has a gap", (int)(h.rx_pkts_dropped - lastDropped));
+                    lastDropped = h.rx_pkts_dropped;
+                }
             }
         }
     }
