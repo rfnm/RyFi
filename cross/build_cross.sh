@@ -47,7 +47,7 @@ cmake -S "$SPDLOG_SRC" -B cross/build-spdlog -DCMAKE_TOOLCHAIN_FILE=$TOOLCHAIN \
 cmake --build cross/build-spdlog -j"$(nproc)"
 cmake --install cross/build-spdlog >/dev/null
 
-# librfnm (>= 0.2.1)
+# librfnm (>= 0.2.0)
 PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$PREFIX/lib/pkgconfig \
 cmake -S "$LIBRFNM_SRC" -B cross/build-librfnm -DCMAKE_TOOLCHAIN_FILE=$TOOLCHAIN \
 	-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX \
